@@ -1,0 +1,7 @@
+{
+  "appId": "com.taxcheck.app",
+  "appName": "절세점검",
+  "webDir": "app",
+  "android": { "allowMixedContent": false },
+  "server": { "androidScheme": "https" }
+}

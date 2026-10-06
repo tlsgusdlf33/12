@@ -1,0 +1,9 @@
+node_modules/
+.firebase/
+*.log
+.DS_Store
+# Capacitor 네이티브 빌드 산출물 (프로젝트 폴더 자체는 커밋)
+android/app/build/
+android/.gradle/
+ios/App/Pods/
+ios/App/build/
