@@ -1,0 +1,158 @@
+# 2026년 귀속 연말정산 세법 설정
+# ─────────────────────────────────────────────────────────────
+# 세법 수치는 코드에 넣지 않고 이 파일에만 둔다. 매년 1월 docs/RULES-REVIEW.md 체크리스트로 검토한다.
+# 금액 단위: 원 / 세율: 지방소득세(10%) 제외 국세 기준 / 무한대: .inf
+# 수정 후: npm test → npm run bump -- patch "2026 세법 수치 수정" → 푸시 (앱은 업데이터로 자동 반영)
+
+year: 2026
+
+meta:
+  status: draft            # draft: 검토 전 / verified: 국세청 자료와 대조 완료
+  reviewedAt: null         # 검토한 날짜 (예: 2027-01-10)
+  note: 2026년 귀속 기준으로 정리한 값입니다. 세법은 매년 바뀌므로 최종 판단은 국세청(홈택스) 안내로 확인하세요.
+  sources:
+    - title: 국세청 연말정산 종합 안내 (매년 1월 「연말정산 신고안내」 책자)
+      url: https://www.nts.go.kr
+    - title: 홈택스 연말정산 미리보기 (매년 11월) · 간소화 자료 (1월 15일)
+      url: https://www.hometax.go.kr
+    - title: 국가법령정보센터 소득세법 (제47조 근로소득공제, 제55조 세율, 제59조의2~4 세액공제)
+      url: https://www.law.go.kr
+  # 출처와 대조가 특히 필요한 값 (앱 설정 화면에 '확인 필요'로 표시)
+  uncertain:
+    - card.childBonusPerChild: 자녀 수에 따른 신용카드 공제 기본한도 상향 (2025년 귀속~) 적용 범위
+    - childCredit: 자녀세액공제 금액 (2025년 귀속 개정분)
+    - socialInsurance: 2026년 국민연금·건강보험·장기요양보험 요율과 기준소득월액 상·하한
+
+localTaxRate: 0.1
+
+# 근로소득공제: [구간 상한, 구간 공제율]  (소득세법 제47조)
+earnedIncomeDeduction:
+  brackets:
+    - [5000000, 0.70]
+    - [15000000, 0.40]
+    - [45000000, 0.15]
+    - [100000000, 0.05]
+    - [.inf, 0.02]
+  max: 20000000
+
+# 인적공제 (1인당)
+personalDeduction:
+  base: 1500000          # 본인·부양가족
+  senior: 1000000        # 경로우대 (만 70세 이상)
+  disabled: 2000000
+  woman: 500000          # 부녀자
+  singleParent: 1000000  # 한부모
+
+# 종합소득세율: [과세표준 상한, 세율, 누진공제]  (소득세법 제55조)
+taxBrackets:
+  - [14000000, 0.06, 0]
+  - [50000000, 0.15, 1260000]
+  - [88000000, 0.24, 5760000]
+  - [150000000, 0.35, 15440000]
+  - [300000000, 0.38, 19940000]
+  - [500000000, 0.40, 25940000]
+  - [1000000000, 0.42, 35940000]
+  - [.inf, 0.45, 65940000]
+
+# 근로소득세액공제 (소득세법 제59조)
+earnedIncomeCredit:
+  lowTaxCap: 1300000
+  lowRate: 0.55
+  highRate: 0.30
+  limits:   # 총급여 구간별 한도 = max(floor, start - (총급여 - from) × reduceRate)
+    - { maxSalary: 33000000, start: 740000, reduceRate: 0, floor: 740000, from: 0 }
+    - { maxSalary: 70000000, start: 740000, reduceRate: 0.008, floor: 660000, from: 33000000 }
+    - { maxSalary: 120000000, start: 660000, reduceRate: 0.5, floor: 500000, from: 70000000 }
+    - { maxSalary: .inf, start: 500000, reduceRate: 0.5, floor: 200000, from: 120000000 }
+
+# 신용카드 등 소득공제 (조세특례제한법 제126조의2)
+card:
+  thresholdRate: 0.25          # 총급여의 25% 초과 사용분부터 공제
+  rates:
+    credit: 0.15
+    debit: 0.30                # 체크카드·현금영수증
+    culture: 0.30              # 도서·공연·박물관·미술관·영화·체육시설
+    market: 0.40               # 전통시장
+    transit: 0.40              # 대중교통
+  cultureSalaryCap: 70000000   # 문화 공제율은 총급여 7천만 원 이하만
+  limits:
+    - { maxSalary: 70000000, base: 3000000, extra: 3000000 }
+    - { maxSalary: .inf, base: 2500000, extra: 2000000 }
+  childBonusPerChild: 500000   # 확인 필요
+  childBonusMaxChildren: 2
+
+# 연금계좌 세액공제 (소득세법 제59조의3)
+pension:
+  savingsLimit: 6000000        # 연금저축 단독 한도
+  totalLimit: 9000000          # 연금저축 + IRP 합산 한도
+  isaTransferRate: 0.10        # ISA 만기 전환액의 10% 추가
+  isaTransferLimit: 3000000
+  highRate: 0.15               # 총급여 5,500만 원 이하
+  lowRate: 0.12
+  highRateSalaryCap: 55000000
+
+# 의료비 세액공제
+medical:
+  thresholdRate: 0.03          # 총급여 3% 초과분부터
+  rate: 0.15
+  generalLimit: 7000000        # 일반 부양가족 한도
+  prematureRate: 0.20          # 미숙아·선천성이상아
+  infertilityRate: 0.30        # 난임 시술비
+
+# 교육비 세액공제
+education:
+  rate: 0.15
+  schoolLimitPerChild: 3000000       # 취학 전·초중고 1인당
+  universityLimitPerPerson: 9000000  # 대학생 1인당
+
+# 보장성 보험료 세액공제
+insurance:
+  rate: 0.12
+  limit: 1000000
+  disabledRate: 0.15
+  disabledLimit: 1000000
+
+# 기부금 세액공제
+donation:
+  fullCreditLimit: 100000      # 정치자금·고향사랑 10만 원까지 100/110
+  hometownLimit: 20000000
+  hometownRate: 0.15
+  politicalRate: 0.15
+  politicalHighThreshold: 30000000
+  politicalHighRate: 0.25
+  generalRate: 0.15
+  generalHighThreshold: 10000000
+  generalHighRate: 0.30
+
+# 월세 세액공제 (무주택 세대주)
+rent:
+  salaryCap: 80000000
+  limit: 10000000
+  highRate: 0.17               # 총급여 5,500만 원 이하
+  lowRate: 0.15
+  highRateSalaryCap: 55000000
+
+# 주택청약종합저축 소득공제 (무주택 세대주)
+housingSubscription:
+  salaryCap: 70000000
+  limit: 3000000
+  rate: 0.40
+
+# 자녀세액공제 — 확인 필요
+childCredit:
+  one: 250000                  # 만 8세 이상 자녀 1명
+  two: 550000                  # 2명
+  extraPerChild: 400000        # 3명 이상: 2명 초과 1인당
+  birth: [0, 300000, 500000, 700000]   # 출생·입양: 없음/첫째/둘째/셋째 이상
+
+marriageCredit: 500000         # 혼인세액공제 (2024~2026년 혼인신고, 생애 1회)
+standardCredit: 130000         # 표준세액공제
+
+# 4대보험 근로자 부담분 자동 추정 — 확인 필요 (원천징수영수증 실제 값 입력 권장)
+socialInsurance:
+  pensionRate: 0.0475
+  pensionMonthlyMin: 400000
+  pensionMonthlyMax: 6370000
+  healthRate: 0.03595
+  longTermCareRatio: 0.1314    # 건강보험료 대비
+  employmentRate: 0.009

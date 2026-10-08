@@ -7,6 +7,9 @@ import { DEFAULT_PROFILE, MONTH_KEYS, PROJECTED_KEYS } from './fields.js';
 const floor = Math.floor;
 const clamp0 = (n) => Math.max(0, n);
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+// 요건 판정: 'yes' | 'no' | 'unknown'. 예전 데이터의 true/false 도 받는다 (false 는 '모름'으로 취급).
+export const isYes = (v) => v === true || v === 'yes';
+export const isUnknown = (v) => v !== true && v !== 'yes' && v !== 'no';
 
 // ───────────────────────── 월별 합계 ─────────────────────────
 
@@ -214,14 +217,14 @@ export function donationCredit(t, rules) {
 
 export function rentCredit(salary, t, profile, rules) {
   const r = rules.rent;
-  if (!profile.homelessHead || salary > r.salaryCap) return { credit: 0, eligible: false };
+  if (!isYes(profile.homelessHead) || salary > r.salaryCap) return { credit: 0, eligible: false };
   const rate = salary <= r.highRateSalaryCap ? r.highRate : r.lowRate;
   return { credit: floor(Math.min(num(t.rent), r.limit) * rate), eligible: true, rate };
 }
 
 export function housingSubscriptionDeduction(salary, t, profile, rules) {
   const h = rules.housingSubscription;
-  if (!profile.homelessHead || salary > h.salaryCap) return { deduction: 0, eligible: false };
+  if (!isYes(profile.homelessHead) || salary > h.salaryCap) return { deduction: 0, eligible: false };
   return {
     deduction: floor(Math.min(num(t.housingSubscription), h.limit) * h.rate),
     eligible: true,
@@ -371,7 +374,8 @@ export function analyze(yearData, { project = true, today = new Date() } = {}) {
   const totalSaved = Object.values(effects).reduce((a, b) => a + b, 0);
   const pension = pensionGain(profile, totals, rules, tax);
   const recommendations = buildRecommendations({ yearData, profile, totals, actualTotals: actual.totals, tax, rules, today });
-  return { rules, profile, totals, actualTotals: actual.totals, enteredCount: actual.enteredCount, tax, effects, totalSaved, pension, recommendations, projected: project && projected.projected };
+  const plan = buildYearEndPlan({ profile, totals, tax, rules, pension });
+  return { rules, profile, totals, actualTotals: actual.totals, enteredCount: actual.enteredCount, tax, effects, totalSaved, pension, plan, recommendations, projected: project && projected.projected };
 }
 
 function monthsLeft(year, today) {
@@ -399,6 +403,111 @@ export function pensionGain(profile, totals, rules, tax = calculateTax(profile, 
     recommended = Math.min(p.room, lo * 10_000);
   }
   return { recommended, gain: tax.totalTax - full.totalTax };
+}
+
+// ───────────────────────── 12월 31일 전에 할 일 (11월 집중 모드) ─────────────────────────
+
+export function buildYearEndPlan({ profile, totals, tax, rules, pension = pensionGain(profile, totals, rules, tax) }) {
+  const items = [];
+  const combined = { ...totals };
+  const gainOf = (patch) => tax.totalTax - calculateTax(profile, { ...totals, ...patch }, rules).totalTax;
+
+  if (pension.recommended > 0) {
+    const patch = { irp: num(totals.irp) + pension.recommended };
+    Object.assign(combined, patch);
+    items.push({
+      id: 'pension',
+      title: `연금저축·IRP ${manwon(pension.recommended)} 추가 납입`,
+      detail: tax.pension.savingsRoom > 0 ? `연금저축 여유 ${manwon(tax.pension.savingsRoom)}, 나머지는 IRP. 12월 31일 입금분까지 인정 (증권사 마감 시간 확인).` : 'IRP로 납입. 12월 31일 입금분까지 인정.',
+      gain: gainOf(patch),
+      deadline: '12월 31일',
+    });
+  }
+  if (tax.housing.eligible && tax.housing.room > 0) {
+    const patch = { housingSubscription: num(totals.housingSubscription) + tax.housing.room };
+    Object.assign(combined, patch);
+    items.push({ id: 'housing', title: `주택청약 ${manwon(tax.housing.room)} 추가 납입`, detail: '연 300만 원까지 40% 소득공제. 은행에 무주택 확인서 제출(다음 해 2월).', gain: gainOf(patch), deadline: '12월 31일' });
+  }
+  const c = tax.card;
+  if (c.thresholdReached) {
+    const general = num(totals.credit) + num(totals.debit);
+    const patch = { credit: Math.min(general, c.threshold), debit: general - Math.min(general, c.threshold) };
+    const gain = gainOf(patch);
+    if (gain > 0) Object.assign(combined, patch);
+    items.push({
+      id: 'card',
+      title: c.baseMaxed ? '카드: 기본 한도 도달 — 혜택 좋은 카드 사용' : '카드: 남은 기간은 체크카드·현금영수증으로',
+      detail: c.baseMaxed ? '추가 공제는 전통시장·대중교통 사용분만 남았습니다.' : `문턱(${manwon(c.threshold)})을 넘었으니 공제율 30%인 체크카드가 유리합니다. 전통시장·대중교통은 40%.`,
+      gain,
+      deadline: '12월 31일',
+    });
+  } else {
+    items.push({ id: 'card', title: `카드: 문턱까지 ${manwon(c.toThreshold)} 부족 (연간 예상)`, detail: '올해 문턱을 못 넘으면 카드 공제는 0원입니다. 남은 기간은 공제보다 혜택(할인·포인트)이 큰 카드를 쓰세요. 맞벌이라면 내년엔 한 사람에게 몰아 쓰기를 검토하세요.', gain: 0, deadline: '12월 31일' });
+  }
+  if (num(totals.donationHometown) < rules.donation.fullCreditLimit && tax.determined > 0) {
+    const patch = { donationHometown: rules.donation.fullCreditLimit };
+    Object.assign(combined, patch);
+    items.push({ id: 'hometown', title: '고향사랑기부금 10만 원', detail: '10만 원 전액 세액공제(지방세 포함) + 30% 답례품. 고향사랑e음에서 기부.', gain: gainOf(patch), deadline: '12월 31일' });
+  }
+  const m = tax.medical;
+  if (m.total > 0) {
+    items.push({
+      id: 'medical',
+      title: m.toThreshold > 0 ? `의료비: 문턱까지 ${manwon(m.toThreshold)}` : '의료비: 문턱 통과 — 예정된 진료는 연내에',
+      detail: m.toThreshold > 0 ? '예정된 치료·안경 구입을 앞당기면 문턱을 넘을 수 있습니다. 맞벌이는 총급여가 낮은 쪽으로 몰아주세요.' : '추가 의료비는 15% 세액공제됩니다. 안경·렌즈 영수증(1인 50만 원)을 챙기세요.',
+      gain: 0,
+      deadline: '12월 31일',
+    });
+  }
+  if (tax.rent.eligible && num(totals.rent) > 0) {
+    items.push({ id: 'rent-docs', title: '월세 증빙 준비', detail: '임대차계약서 사본, 월세 이체 내역, 주민등록등본(전입 확인). 간소화 자료에 안 나오므로 회사에 직접 제출.', gain: 0, deadline: '1월 회사 제출' });
+  }
+  items.push({ id: 'preview', title: '홈택스 연말정산 미리보기와 대조', detail: '1~9월 카드 사용액이 이 앱 입력값과 맞는지 확인하고, 다르면 월별 입력을 고치세요.', gain: 0, deadline: '11월 말' });
+
+  const totalGain = tax.totalTax - calculateTax(profile, combined, rules).totalTax;
+  return { items, totalGain };
+}
+
+// ───────────────────────── 시뮬레이터 검증 (작년 원천징수영수증) ─────────────────────────
+
+export const VALIDATION_FIELDS = [
+  { key: 'salary', label: '총급여', src: '⑯ 계' },
+  { key: 'actualTax', label: '결정세액 (소득세)', src: '㉒ 결정세액 소득세' },
+  { key: 'nationalPension', label: '국민연금보험료', src: '㉛ 국민연금' },
+  { key: 'healthInsurance', label: '건강·고용보험료', src: '㉝ 보험료 (건강+고용)' },
+  { key: 'credit', label: '신용카드 사용액', src: '신용카드 등 소득공제 명세' },
+  { key: 'debit', label: '체크카드·현금영수증 사용액' },
+  { key: 'market', label: '전통시장 사용액' },
+  { key: 'transit', label: '대중교통 사용액' },
+  { key: 'culture', label: '도서·공연 등 사용액' },
+  { key: 'pensionSavings', label: '연금저축 납입액' },
+  { key: 'irp', label: 'IRP 납입액' },
+  { key: 'insurance', label: '보장성 보험료' },
+  { key: 'medicalSpecial', label: '의료비 (본인·65세 이상 등)' },
+  { key: 'medicalGeneral', label: '의료비 (그 외 부양가족)' },
+  { key: 'eduSelf', label: '교육비 (본인)' },
+  { key: 'eduSchool', label: '교육비 (자녀)' },
+  { key: 'donationGeneral', label: '기부금 (일반)' },
+  { key: 'donationHometown', label: '고향사랑기부금' },
+  { key: 'rent', label: '월세 (세액공제 받은 경우)' },
+  { key: 'housingSubscription', label: '주택청약 납입액 (공제받은 경우)' },
+];
+
+export function validateSimulator(input, profileBase, rules) {
+  const v = Object.fromEntries(VALIDATION_FIELDS.map((f) => [f.key, num(input[f.key])]));
+  const profile = {
+    ...profileBase,
+    salary: v.salary,
+    nationalPension: v.nationalPension || null,
+    healthInsurance: v.healthInsurance || null,
+    homelessHead: v.rent > 0 || v.housingSubscription > 0 ? 'yes' : 'no',
+    prepaidTax: null,
+  };
+  const t = calculateTax(profile, v, rules);
+  const actual = v.actualTax;
+  const diff = t.determined - actual;
+  const errorRate = actual > 0 ? Math.abs(diff) / actual : t.determined === 0 ? 0 : 1;
+  return { computed: t.determined, actual, diff, errorRate, pass: errorRate <= 0.05, tax: t, rulesYear: rules.year, fallbackFrom: rules.fallbackFrom };
 }
 
 export function buildRecommendations({ yearData, profile, totals, actualTotals, tax, rules, today }) {
@@ -525,8 +634,31 @@ export function buildRecommendations({ yearData, profile, totals, actualTotals, 
     });
   }
 
+  // 확인 필요: 요건 판정이 애매하면 계산에서 빼고, 충족 시 효과를 함께 보여준다
+  if (isUnknown(profile.homelessHead) && (num(totals.rent) > 0 || num(totals.housingSubscription) > 0)) {
+    const ifYes = calculateTax({ ...profile, homelessHead: 'yes' }, totals, rules);
+    const gain = tax.totalTax - ifYes.totalTax;
+    recs.push({
+      level: 'check',
+      id: 'check-homeless',
+      title: '확인 필요: 무주택 세대주인가요?',
+      body: `월세·주택청약 공제는 과세기간 종료일(12월 31일) 기준 무주택 세대주만 받을 수 있어 지금은 계산에서 뺐습니다. 해당된다면 세금이 약 ${won(gain)} 줄어듭니다. 주민등록등본의 세대주 여부와 세대원 전원의 주택 소유 여부를 확인한 뒤 내 정보에서 선택하세요.`,
+      action: 'settings',
+      amount: gain,
+    });
+  }
+  if (num(profile.dependents) > 0 && !profile.dependentsVerified) {
+    recs.push({
+      level: 'check',
+      id: 'check-dependents',
+      title: '확인 필요: 부양가족 소득·나이 요건',
+      body: '부양가족은 연 소득 100만 원 이하(근로소득만 있으면 총급여 500만 원 이하)이고, 직계존속 만 60세 이상·자녀 만 20세 이하여야 합니다(장애인은 나이 무관). 형제자매와 중복 공제도 안 됩니다. 확인했으면 내 정보에서 체크하세요.',
+      action: 'settings',
+    });
+  }
+
   // 월세·청약
-  if (profile.homelessHead) {
+  if (isYes(profile.homelessHead)) {
     if (salary <= rules.rent.salaryCap && num(totals.rent) === 0) {
       recs.push({
         level: 'tip',
@@ -545,13 +677,22 @@ export function buildRecommendations({ yearData, profile, totals, actualTotals, 
     }
   }
 
-  // 12월 마감 알림
-  if (today.getFullYear() === year && today.getMonth() >= 10) {
+  // 11월 집중 모드 → 12월 마감
+  if (today.getFullYear() === year && today.getMonth() === 10) {
+    recs.push({
+      level: 'urgent',
+      id: 'focus-mode',
+      title: '11월 집중 모드: 12월 31일 전에 할 일을 확정하세요',
+      body: '홈택스 「연말정산 미리보기」에서 1~9월 카드 사용액을 확인해 이 앱의 입력값과 맞춰 보고, 연말 할 일 목록(연금 추가 납입액·카드 사용 전략)을 이달 안에 정하세요.',
+      action: 'plan',
+    });
+  } else if (today.getFullYear() === year && today.getMonth() === 11) {
     recs.push({
       level: 'urgent',
       id: 'year-end',
       title: '올해 공제는 12월 31일 결제·납입분까지',
       body: '연금저축·IRP 추가 납입, 의료비·교육비 결제, 기부금은 연말 전에 마쳐야 올해 공제에 반영됩니다.',
+      action: 'plan',
     });
   }
 
@@ -565,6 +706,6 @@ export function buildRecommendations({ yearData, profile, totals, actualTotals, 
     });
   }
 
-  const order = { urgent: 0, tip: 1, info: 2, done: 3 };
+  const order = { urgent: 0, check: 1, tip: 2, info: 3, done: 4 };
   return recs.sort((a, b) => order[a.level] - order[b.level] || (b.amount || 0) - (a.amount || 0));
 }

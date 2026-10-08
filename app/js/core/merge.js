@@ -21,6 +21,7 @@ export function mergeYear(local, remote) {
     profile: { ...base.profile, ...newer(local.profile, remote.profile) },
     months,
     review: { ...base.review, ...newer(local.review, remote.review) },
+    plan: { ...base.plan, ...newer(local.plan, remote.plan) },
   };
 }
 
@@ -29,6 +30,7 @@ export function lastUpdated(yearData) {
   return Math.max(
     yearData.profile?.updatedAt || 0,
     yearData.review?.updatedAt || 0,
+    yearData.plan?.updatedAt || 0,
     ...Object.values(yearData.months || {}).map((m) => m.updatedAt || 0),
   );
 }

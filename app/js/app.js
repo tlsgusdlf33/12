@@ -1,7 +1,8 @@
 import { store } from './store.js';
-import { analyze, enteredMonths, EFFECT_LABELS, estimateSocialInsurance } from './core/tax-engine.js';
-import { MONTH_GROUPS, MONTH_KEYS } from './core/fields.js';
-import { SUPPORTED_YEARS, getRules } from './core/rules.js';
+import { analyze, enteredMonths, EFFECT_LABELS, estimateSocialInsurance, validateSimulator, VALIDATION_FIELDS } from './core/tax-engine.js';
+import { MONTH_GROUPS } from './core/fields.js';
+import { loadRules, supportedYears, getRules } from './core/rules.js';
+import { importTransactions, decodeBytes } from './core/card-import.js';
 import { APP_VERSION } from './version.js';
 import * as sync from './sync.js';
 import { initUpdater, checkForUpdate, applyUpdate, fetchRemoteVersion } from './updater.js';
@@ -66,7 +67,7 @@ function route() {
   ui.tab = next;
   render();
   if (changed) window.scrollTo(0, 0);
-  if (arg && next === 'settings') document.getElementById(arg)?.scrollIntoView({ block: 'start' });
+  if (arg && next !== 'input') document.getElementById(arg)?.scrollIntoView({ block: 'start' });
 }
 
 function render() {
@@ -95,7 +96,7 @@ function scheduleRender() {
 
 function renderYearSelect() {
   const sel = $('#year-select');
-  const years = new Set([...SUPPORTED_YEARS, today().getFullYear(), store.year]);
+  const years = new Set([...supportedYears(), today().getFullYear(), store.year]);
   const list = [...years].sort((a, b) => b - a);
   const html = list.map((y) => `<option value="${y}" ${y === store.year ? 'selected' : ''}>${y}년 귀속</option>`).join('');
   if (sel.innerHTML !== html) sel.innerHTML = html;
@@ -107,15 +108,17 @@ function result() {
 
 // ───────────────────────── 홈 ─────────────────────────
 
-const REC_ICON = { urgent: '!', tip: '↗', info: 'i', done: '✓' };
+const REC_ICON = { urgent: '!', check: '?', tip: '↗', info: 'i', done: '✓' };
 
 function recCard(r) {
   const action =
     r.action === 'input'
       ? `<div class="rec-action"><a class="btn btn-sm btn-primary" href="#input/${r.month || ''}">입력하러 가기</a></div>`
       : r.action === 'settings'
-        ? `<div class="rec-action"><a class="btn btn-sm btn-primary" href="#settings/profile">내 정보 입력</a></div>`
-        : '';
+        ? `<div class="rec-action"><a class="btn btn-sm btn-primary" href="#settings/profile">내 정보에서 선택</a></div>`
+        : r.action === 'plan'
+          ? `<div class="rec-action"><a class="btn btn-sm btn-primary" href="#status/plan">연말 할 일 보기</a></div>`
+          : '';
   return `<div class="rec ${r.level}"><div class="dot">${REC_ICON[r.level]}</div><div><h3>${esc(r.title)}</h3><p>${esc(r.body)}</p>${action}</div></div>`;
 }
 
@@ -254,6 +257,7 @@ function renderHome() {
       </div>
     </div>
 
+    ${seasonalCard(r)}
     <div class="section-title"><span>이번 달 할 일</span><a class="small" href="#status">자세히 →</a></div>
     <div>${urgent.length ? urgent.map(recCard).join('') : '<div class="card empty">지금은 할 일이 없어요. 다음 달에 만나요!</div>'}</div>
 
@@ -268,6 +272,45 @@ function renderHome() {
   </div>`;
 
   notifyIfNeeded(r.recommendations, store.settings, (patch) => store.setSettings(patch));
+}
+
+// 11~12월: 연말 할 일 요약 / 1~2월: 작년 귀속 간소화 자료 대조
+function seasonalCard(r) {
+  const now = today();
+  const m = now.getMonth();
+  if (isCurrentYear() && m >= 10) {
+    const done = store.getYear().plan?.done || {};
+    const left = r.plan.items.filter((i) => !done[i.id]).length;
+    return `<a class="card seasonal" href="#status/plan">
+      <div class="row between"><b>${m === 10 ? '11월 집중 모드' : '12월 마감'} · 12월 31일 전에 할 일</b><span class="pill warn">${left}개 남음</span></div>
+      <p class="small muted" style="margin:4px 0 0">모두 하면 세금이 약 <b>${won(r.plan.totalGain)}</b> 줄어듭니다 →</p></a>`;
+  }
+  if (m <= 1 && store.year === now.getFullYear()) {
+    const jan = store.getYear().review?.janItems || {};
+    const checked = JAN_ITEMS.filter((i) => jan[i.id]).length;
+    return `<a class="card seasonal" href="#review/jan">
+      <div class="row between"><b>${now.getFullYear() - 1}년 귀속 간소화 자료 대조</b><span class="pill warn">${checked} / ${JAN_ITEMS.length}</span></div>
+      <p class="small muted" style="margin:4px 0 0">1월 15일 열리는 간소화 자료에 빠지는 항목(안경·교복·월세 등)을 챙기세요 →</p></a>`;
+  }
+  return '';
+}
+
+function planCard(r) {
+  const y = store.getYear();
+  const done = y.plan?.done || {};
+  const items = r.plan.items;
+  const doneCount = items.filter((i) => done[i.id]).length;
+  return `<div class="card" id="plan">
+    <div class="row between" style="margin-bottom:4px"><h2 style="margin:0">12월 31일 전에 할 일</h2><span class="tiny">${doneCount} / ${items.length} 완료</span></div>
+    <p class="tiny" style="margin:0 0 10px">11월 말까지 확정하세요. 모두 하면 세금이 약 <b>${won(r.plan.totalGain)}</b> 줄어듭니다 (낼 세금보다 많이 줄지는 않도록 계산).</p>
+    ${items
+      .map(
+        (i) => `<label class="check plan-item ${done[i.id] ? 'is-done' : ''}"><input type="checkbox" data-plan="${i.id}" ${done[i.id] ? 'checked' : ''} />
+        <span><b>${esc(i.title)}</b>${i.gain > 0 ? ` <span class="pill good">약 ${won(i.gain)} 절세</span>` : ''}<br><span class="tiny">${esc(i.detail)} · 기한 ${esc(i.deadline)}</span></span></label>`,
+      )
+      .join('')}
+    <p class="tiny" style="margin:12px 0 0">11월에는 <a href="https://www.hometax.go.kr" target="_blank" rel="noopener">홈택스 연말정산 미리보기</a>에서 1~9월 카드 사용액을 확인해 이 앱 입력값과 대조하세요.</p>
+  </div>`;
 }
 
 function disclaimer(rules) {
@@ -307,8 +350,9 @@ function renderInput() {
       <div class="btn-row">
         ${prevMonth ? `<button class="btn btn-sm" type="button" data-action="copy-prev">${prevMonth}월 정기 납입 복사</button>` : ''}
         ${!isEntered ? `<button class="btn btn-sm" type="button" data-action="mark-entered">변동 없음 (입력 완료)</button>` : ''}
+        <button class="btn btn-sm" type="button" data-action="open-import">카드 내역 CSV 가져오기</button>
       </div>
-      <p class="tiny" style="margin:10px 0 0">금액을 입력하면 바로 저장되고, 로그인한 다른 기기에도 반영됩니다.</p>
+      <p class="tiny" style="margin:10px 0 0">금액을 입력하면 바로 저장되고, 로그인한 다른 기기에도 반영됩니다. 카드사 이용내역(CSV)을 가져오면 전통시장·대중교통·문화 사용분을 자동으로 나눠 채웁니다.</p>
     </div>
 
     ${MONTH_GROUPS.map(
@@ -343,6 +387,75 @@ function refreshInputChrome() {
   }
 }
 
+// ───────────────────────── 카드 내역 가져오기 ─────────────────────────
+
+const dialog = $('#dialog');
+const CAT_LABEL = { credit: '신용', debit: '체크', market: '시장', transit: '교통', culture: '문화' };
+
+function openImportDialog() {
+  ui.pendingImport = null;
+  dialog.innerHTML = `<form method="dialog" data-form="import">
+    <h2 style="margin:0 0 6px">카드 내역 CSV 가져오기</h2>
+    <p class="tiny" style="margin:0 0 12px">카드사 앱·홈페이지에서 이용내역을 엑셀로 내려받아 <b>CSV로 저장</b>한 파일, 또는 6번(고정비) 정규화 CSV를 고르세요. 파일은 이 기기 안에서만 읽고 월별 합계만 저장합니다.</p>
+    <label class="field"><span class="label">파일</span><input type="file" accept=".csv,text/csv" data-import-file /></label>
+    <label class="field"><span class="label">결제수단 <small>파일에 결제수단 열이 없을 때</small></span>
+      <select class="input" data-import-method><option value="credit">신용카드</option><option value="debit">체크카드·현금영수증</option></select></label>
+    <label class="field"><span class="label">기존 입력값과</span>
+      <select class="input" data-import-mode><option value="replace">바꾸기 — 파일에 있는 달의 카드 금액을 교체</option><option value="add">더하기 — 다른 카드 파일을 추가로 가져올 때</option></select></label>
+    <div data-import-preview></div>
+    <div class="btn-row"><button class="btn" value="cancel">닫기</button><button class="btn btn-primary" type="button" data-action="apply-import" disabled>가져오기</button></div>
+  </form>`;
+  dialog.showModal();
+}
+
+async function previewImport() {
+  const file = dialog.querySelector('[data-import-file]').files?.[0];
+  const out = dialog.querySelector('[data-import-preview]');
+  const applyBtn = dialog.querySelector('[data-action="apply-import"]');
+  applyBtn.disabled = true;
+  if (!file) return (out.innerHTML = '');
+  try {
+    const text = decodeBytes(await file.arrayBuffer());
+    const res = importTransactions(text, { year: store.year, defaultMethod: dialog.querySelector('[data-import-method]').value });
+    ui.pendingImport = res;
+    const months = Object.keys(res.months).map(Number).sort((a, b) => a - b);
+    const s = res.summary;
+    out.innerHTML = months.length
+      ? `<table class="table import-table" style="margin-top:12px"><tr><td><b>월</b></td>${Object.values(CAT_LABEL).map((l) => `<td><b>${l}</b></td>`).join('')}</tr>
+        ${months.map((m) => `<tr><td>${m}월</td>${Object.keys(CAT_LABEL).map((k) => `<td>${res.months[m][k] ? man(res.months[m][k]) : '-'}</td>`).join('')}</tr>`).join('')}</table>
+        <p class="tiny" style="margin:6px 0 0">체크 = 체크카드·현금영수증, 시장 = 전통시장, 교통 = 대중교통, 문화 = 도서·공연 등</p>
+        <p class="tiny" style="margin:4px 0 0">${s.used}건 반영${s.cancelled ? ` (취소 ${s.cancelled}건 차감)` : ''}${s.otherYear ? ` · 다른 연도 ${s.otherYear}건 제외` : ''}${s.invalid ? ` · 읽지 못한 줄 ${s.invalid}건` : ''}</p>
+        ${s.excluded.length ? `<p class="tiny" style="margin:4px 0 0">공제 제외로 판단해 뺀 ${s.excluded.length}건 (세금·관리비·보험료·상품권·통행료 등): ${esc(s.examples.excluded.join(', '))}</p>` : ''}
+        ${['market', 'transit', 'culture'].filter((k) => s.examples[k].length).map((k) => `<p class="tiny" style="margin:4px 0 0">${CAT_LABEL[k]}로 분류: ${esc(s.examples[k].join(', '))}</p>`).join('')}`
+      : `<p class="small" style="color:var(--bad)">${store.year}년 사용 내역이 없습니다.</p>`;
+    applyBtn.disabled = !months.length;
+  } catch (err) {
+    out.innerHTML = `<p class="small" style="color:var(--bad)">${esc(err.message)}</p>`;
+  }
+}
+
+function applyImport() {
+  const res = ui.pendingImport;
+  if (!res) return;
+  const add = dialog.querySelector('[data-import-mode]').value === 'add';
+  const y = store.getYear();
+  for (const [m, vals] of Object.entries(res.months)) {
+    const cur = y.months[m] || {};
+    const patch = Object.fromEntries(Object.entries(vals).map(([k, v]) => [k, add ? (Number(cur[k]) || 0) + v : v]));
+    store.updateMonth(Number(m), patch);
+  }
+  dialog.close();
+  render();
+  toast(`${Object.keys(res.months).length}개월 카드 사용액을 가져왔어요`);
+}
+
+dialog.addEventListener('change', (e) => {
+  if (e.target.matches('[data-import-file], [data-import-method]')) previewImport();
+});
+dialog.addEventListener('click', (e) => {
+  if (e.target.closest('[data-action="apply-import"]')) applyImport();
+});
+
 // ───────────────────────── 공제 현황 ─────────────────────────
 
 function renderStatus() {
@@ -367,6 +480,8 @@ function renderStatus() {
       <span class="tiny">${r.enteredCount}개월 입력</span>
     </div>
     <p class="tiny" style="margin:6px 2px 0">연간 예상: 입력하지 않은 달의 카드 사용액·월세를 입력한 달의 평균으로 채워 계산합니다. 연금·의료비 등은 입력한 금액만 반영합니다.</p>
+
+    ${planCard(r)}
 
     <div class="card">
       <h2>항목별 절세 효과</h2>
@@ -451,6 +566,68 @@ const REVIEW_ITEMS = [
   { id: 'dependents', title: '부양가족 기본공제', missed: '소득 없는 부모님(만 60세 이상, 따로 살아도 가능), 형제자매, 장애인 가족을 빠뜨리지 않았는지 확인하세요. 1인당 150만 원 소득공제입니다.' },
 ];
 
+// 1월 대조: 간소화 자료에 안 나오거나 빠지기 쉬운 항목
+const JAN_ITEMS = [
+  { id: 'glasses', title: '안경·콘택트렌즈 구입비', tip: '1인 연 50만 원까지 의료비. 안경점에서 "소득공제용 영수증"을 받으세요.' },
+  { id: 'uniform', title: '중·고등학생 교복 구입비', tip: '1인 연 50만 원까지 교육비. 교복 업체 영수증 필요.' },
+  { id: 'fieldtrip', title: '초·중·고 현장체험학습비', tip: '1인 연 30만 원까지 교육비. 학교에서 납입 증명서 발급.' },
+  { id: 'preschool', title: '취학 전 아동 학원·체육시설비', tip: '학원·태권도장 등에서 교육비 납입 증명서 발급.' },
+  { id: 'rent', title: '월세 증빙', tip: '임대차계약서 사본 + 월세 이체 내역 + 주민등록등본. 회사에 직접 제출.' },
+  { id: 'donation', title: '간소화에 없는 기부금', tip: '종교단체 등 일부 기부금은 단체에서 기부금 영수증을 받아야 합니다.' },
+  { id: 'postpartum', title: '산후조리원 비용', tip: '출산 1회당 200만 원까지 의료비. 누락 시 조리원 영수증 제출.' },
+  { id: 'devices', title: '보청기·장애인 보장구·의료기기', tip: '구입처 영수증과 처방전을 함께 제출.' },
+  { id: 'consent', title: '부양가족 간소화 자료 제공 동의', tip: '따로 사는 부모님·성인 자녀 등은 홈택스에서 자료 제공 동의를 해야 조회됩니다.' },
+  { id: 'housing-cert', title: '주택청약 무주택 확인서', tip: '청약 통장 은행에 다음 해 2월 말까지 제출해야 소득공제됩니다.' },
+  { id: 'insurance-refund', title: '실손보험 수령액 차감 확인', tip: '돌려받은 실손보험금만큼 의료비에서 빠졌는지 간소화 자료에서 확인하세요.' },
+];
+
+function validationCard(y) {
+  const v = y.review.validation || {};
+  const prevYear = store.year - 1;
+  const rules = getRules(prevYear);
+  const hasData = Number(v.salary) > 0 && Number(v.actualTax) >= 0 && v.actualTax != null && v.actualTax !== '';
+  let resultHtml = '<p class="tiny" style="margin:8px 0 0">총급여와 결정세액을 넣으면 결과가 나옵니다.</p>';
+  if (hasData) {
+    const res = validateSimulator(v, { dependents: v.dependents, seniors: v.seniors, children: v.children, childrenOver8: v.childrenOver8 }, rules);
+    resultHtml = `<div class="validation ${res.pass ? 'pass' : 'fail'}">
+      <div class="row between"><b>오차 ${(res.errorRate * 100).toFixed(1)}%</b><span class="pill ${res.pass ? 'good' : 'warn'}">${res.pass ? '통과 (5% 이내)' : '5% 초과 — 확인 필요'}</span></div>
+      <p class="small" style="margin:6px 0 0">앱 계산 ${won(res.computed)} · 실제 ${won(res.actual)} (차이 ${res.diff >= 0 ? '+' : ''}${won(res.diff)})</p>
+      ${res.pass ? '' : '<p class="tiny" style="margin:6px 0 0">국민연금·건강보험을 실제 값으로 넣었는지, 부양가족 수와 카드 사용액 구분이 맞는지 확인하세요. 이 앱이 다루지 않는 공제(주택자금 차입금, 중소기업 취업자 감면 등)가 있으면 오차가 날 수 있습니다.</p>'}
+      ${res.fallbackFrom ? `<p class="tiny" style="margin:6px 0 0">${prevYear}년 세법 설정이 없어 ${res.fallbackFrom}년 기준으로 계산했습니다.</p>` : ''}
+    </div>`;
+  }
+  const num = (key, label) => `<label class="field"><span class="label">${label}</span><span class="input-wrap"><input type="number" min="0" max="20" inputmode="numeric" data-validation-num="${key}" value="${v[key] || 0}" /><span class="unit">명</span></span></label>`;
+  return `<div class="card" id="validate">
+    <h2>시뮬레이터 검증 (${prevYear}년 원천징수영수증)</h2>
+    <p class="tiny" style="margin:-4px 0 10px">홈택스 → 지급명세서 → 근로소득 원천징수영수증의 값을 넣으면, 이 앱의 계산과 실제 결정세액의 오차를 보여줍니다. 목표는 오차 5% 이내입니다.</p>
+    <div data-validation-result>${resultHtml}</div>
+    <details style="margin-top:12px" ${hasData ? '' : 'open'}><summary class="small" style="cursor:pointer">원천징수영수증 값 입력</summary>
+      <div class="grid-2" style="margin-top:10px">
+        ${VALIDATION_FIELDS.map((f) => moneyField({ key: f.key, label: f.label, help: f.src || '', value: v[f.key], scope: 'validation', placeholder: '0' })).join('')}
+        ${num('dependents', '부양가족 (본인 제외)')}${num('seniors', '그중 만 70세 이상')}${num('children', '기본공제 자녀')}${num('childrenOver8', '그중 만 8세 이상')}
+      </div>
+    </details>
+  </div>`;
+}
+
+function renderValidationResult() {
+  const box = view.querySelector('[data-validation-result]');
+  if (!box) return;
+  const tmp = document.createElement('div');
+  tmp.innerHTML = validationCard(store.getYear());
+  box.innerHTML = tmp.querySelector('[data-validation-result]').innerHTML;
+}
+
+function janCard(y) {
+  const jan = y.review.janItems || {};
+  const seg = (id, val, label) => `<button type="button" data-jan="${id}" data-value="${val}" aria-pressed="${jan[id] === val}">${label}</button>`;
+  return `<div class="card" id="jan">
+    <div class="row between" style="margin-bottom:4px"><h2 style="margin:0">1월 간소화 자료 대조 (${store.year - 1}년 귀속)</h2><span class="tiny">${JAN_ITEMS.filter((i) => jan[i.id]).length} / ${JAN_ITEMS.length}</span></div>
+    <p class="tiny" style="margin:0 0 6px">1월 15일 홈택스 간소화 자료가 열리면 아래 항목이 빠지지 않았는지 확인하고, 없으면 영수증을 따로 챙기세요. 누락 0건이 목표입니다.</p>
+    ${JAN_ITEMS.map((i) => `<div class="review-item"><h3>${esc(i.title)}</h3><p>${esc(i.tip)}</p><div class="segmented">${seg(i.id, 'done', '챙김')}${seg(i.id, 'na', '해당 없음')}</div></div>`).join('')}
+  </div>`;
+}
+
 function renderReview() {
   const y = store.getYear();
   const items = y.review.items || {};
@@ -493,6 +670,9 @@ function renderReview() {
         ${moneyField({ key: 'lastYearRefund', label: '금액', value: y.review.lastYearRefund, scope: 'review' })}
       </div>
     </div>
+
+    ${validationCard(y)}
+    ${janCard(y)}
 
     ${
       missed.length
@@ -562,6 +742,18 @@ function renderInstallCard() {
     <p class="tiny" style="margin:8px 0 0">설치 후에도 새 버전이 나오면 앱 안에서 바로 업데이트됩니다. 다시 설치할 필요가 없어요.</p></div>`;
 }
 
+function renderRulesCard(rules) {
+  const m = rules.meta || {};
+  const verified = m.status === 'verified';
+  return `<div class="card" id="rules">
+    <div class="row between" style="margin-bottom:6px"><h2 style="margin:0">세법 설정 (${rules.year}년 귀속)</h2><span class="pill ${verified ? 'good' : 'warn'}">${verified ? `검토 완료 ${esc(m.reviewedAt || '')}` : '검토 전 · 확인 필요'}</span></div>
+    ${rules.fallbackFrom ? `<p class="small" style="margin:0 0 6px;color:var(--warn)">${rules.year}년 설정 파일이 아직 없어 ${rules.fallbackFrom}년 값으로 계산합니다.</p>` : ''}
+    <p class="tiny" style="margin:0">공제율·한도·문턱은 코드가 아닌 연도별 설정 파일(<code>rules/${rules.fallbackFrom || rules.year}.yaml</code>)에 있고, 고치면 업데이트로 모든 기기에 반영됩니다.</p>
+    ${(m.uncertain || []).length ? `<p class="small" style="margin:10px 0 4px"><b>확인 필요 항목</b></p><ul class="tiny" style="margin:0;padding-left:18px">${m.uncertain.map((u) => `<li>${esc(Object.values(u)[0])} <code>${esc(Object.keys(u)[0])}</code></li>`).join('')}</ul>` : ''}
+    ${(m.sources || []).length ? `<p class="small" style="margin:10px 0 4px"><b>출처</b></p><ul class="tiny" style="margin:0;padding-left:18px">${m.sources.map((src) => `<li><a href="${esc(src.url)}" target="_blank" rel="noopener">${esc(src.title)}</a></li>`).join('')}</ul>` : ''}
+  </div>`;
+}
+
 function renderSettings() {
   const y = store.getYear();
   const p = y.profile;
@@ -589,7 +781,12 @@ function renderSettings() {
             ${['없음', '첫째', '둘째', '셋째 이상'].map((t, i) => `<option value="${i}" ${Number(p.newbornOrder) === i ? 'selected' : ''}>${t}</option>`).join('')}
           </select></label>
       </div>
-      ${checkField('homelessHead', '무주택 세대주', p.homelessHead, '월세 세액공제·주택청약 소득공제 대상 여부')}
+      <label class="field"><span class="label">무주택 세대주 <small>월세 세액공제·주택청약 소득공제 요건</small></span>
+        <select class="input" data-profile-choice="homelessHead">
+          ${[['unknown', '모르겠음 (확인 필요)'], ['yes', '예'], ['no', '아니오']].map(([v, t]) => `<option value="${v}" ${(p.homelessHead === true ? 'yes' : p.homelessHead === false ? 'unknown' : p.homelessHead) === v ? 'selected' : ''}>${t}</option>`).join('')}
+        </select>
+        <span class="hint">12월 31일 기준 세대주이고 세대원 전원이 무주택이어야 합니다. 모르면 계산에서 빼고 '확인 필요'로 안내합니다.</span></label>
+      ${checkField('dependentsVerified', '부양가족 소득·나이 요건을 확인했어요', p.dependentsVerified, '연 소득 100만 원 이하(근로소득만 있으면 총급여 500만 원 이하), 부모 만 60세 이상·자녀 만 20세 이하, 형제자매와 중복 공제 없음')}
       ${checkField('married', '올해 혼인신고 (2024~2026년)', p.married, '생애 1회 50만 원 세액공제')}
       ${checkField('woman', '부녀자 공제 대상', p.woman)}
       ${checkField('singleParent', '한부모 공제 대상', p.singleParent)}
@@ -599,6 +796,7 @@ function renderSettings() {
       </details>
     </div>
 
+    ${renderRulesCard(rules)}
     ${renderAccountCard()}
     ${renderInstallCard()}
 
@@ -676,7 +874,19 @@ view.addEventListener('change', (e) => {
       store.updateProfile({ [key]: d ? Number(d) : optional ? null : 0 });
     } else if (scope === 'review') {
       store.updateReview({ [key]: d ? Number(d) : null });
+    } else if (scope === 'validation') {
+      store.updateReview({ validation: { ...store.getYear().review.validation, [key]: d ? Number(d) : null } });
+      renderValidationResult();
     }
+    savedToast();
+  } else if (el.matches('[data-validation-num]')) {
+    store.updateReview({ validation: { ...store.getYear().review.validation, [el.dataset.validationNum]: Math.max(0, Math.min(20, Number(el.value) || 0)) } });
+    renderValidationResult();
+  } else if (el.matches('[data-plan]')) {
+    store.updatePlan({ done: { ...store.getYear().plan?.done, [el.dataset.plan]: el.checked } });
+    el.closest('.plan-item')?.classList.toggle('is-done', el.checked);
+  } else if (el.matches('[data-profile-choice]')) {
+    store.updateProfile({ [el.dataset.profileChoice]: el.value });
     savedToast();
   } else if (el.matches('[data-profile-num]')) {
     store.updateProfile({ [el.dataset.profileNum]: Math.max(0, Math.min(20, Number(el.value) || 0)) });
@@ -740,6 +950,14 @@ view.addEventListener('click', async (e) => {
     const items = { ...store.getYear().review.items };
     items[el.dataset.review] = items[el.dataset.review] === el.dataset.value ? undefined : el.dataset.value;
     store.updateReview({ items: JSON.parse(JSON.stringify(items)) });
+    render();
+    return;
+  }
+  if (el.dataset.jan) {
+    const jan = { ...store.getYear().review.janItems };
+    jan[el.dataset.jan] = jan[el.dataset.jan] === el.dataset.value ? undefined : el.dataset.value;
+    store.updateReview({ janItems: JSON.parse(JSON.stringify(jan)) });
+    render();
     return;
   }
 
@@ -757,6 +975,9 @@ view.addEventListener('click', async (e) => {
       toast(`${prev}월 정기 납입(연금·월세·청약·보험)을 복사했어요`);
       break;
     }
+    case 'open-import':
+      openImportDialog();
+      break;
     case 'mark-entered':
       store.updateMonth(ui.month, {});
       refreshInputChrome();
@@ -875,7 +1096,6 @@ window.addEventListener('appinstalled', () => {
 store.subscribe(({ source }) => {
   if (source === 'local') {
     // 입력 화면은 직접 갱신하므로 다시 그리지 않음 (포커스 유지)
-    if (ui.tab === 'review') render();
     return;
   }
   scheduleRender();
@@ -908,7 +1128,12 @@ $('#update-apply').addEventListener('click', () => {
 // ───────────────────────── 시작 ─────────────────────────
 
 window.addEventListener('hashchange', route);
-route();
+try {
+  await loadRules();
+  route();
+} catch (err) {
+  view.innerHTML = `<div class="card empty">세법 설정 파일을 불러오지 못했습니다.<br><span class="tiny">${esc(err.message)}</span><div class="btn-row" style="justify-content:center"><button class="btn btn-primary" type="button" onclick="location.reload()">다시 시도</button></div></div>`;
+}
 initUpdater({ onUpdateAvailable: showUpdateBanner });
 sync.initSync();
 fetchRemoteVersion()

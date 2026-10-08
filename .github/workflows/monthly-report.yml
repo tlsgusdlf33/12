@@ -1,0 +1,45 @@
+# 매달 1일 오전 9시(한국 시간) 월간 점검 요약을 텔레그램으로 보낸다.
+# 데이터는 저장소에 두지 않고 실행할 때 Firebase(Firestore)에서 읽는다.
+# 설정: 저장소 Settings → Secrets and variables → Actions 에 아래 4개를 등록 (README "월간 텔레그램 리포트" 참고)
+#   FIREBASE_SERVICE_ACCOUNT, FIREBASE_UID, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+name: Monthly report
+
+on:
+  schedule:
+    - cron: '0 0 1 * *' # UTC 00:00 = KST 09:00
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 시크릿 확인
+        id: check
+        env:
+          SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          TG: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          if [ -z "$SA" ] || [ -z "$TG" ]; then
+            echo "시크릿이 설정되지 않아 건너뜁니다."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.check.outputs.ready == 'true'
+      - uses: actions/setup-node@v4
+        if: steps.check.outputs.ready == 'true'
+        with:
+          node-version: 22
+      - if: steps.check.outputs.ready == 'true'
+        run: npm i --no-save --no-package-lock firebase-admin
+      - if: steps.check.outputs.ready == 'true'
+        env:
+          TZ: Asia/Seoul
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: node scripts/monthly-report.mjs --firestore --uid "${{ secrets.FIREBASE_UID }}" --send

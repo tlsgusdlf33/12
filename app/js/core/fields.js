@@ -91,7 +91,8 @@ export const DEFAULT_PROFILE = {
   woman: false, // 부녀자 공제
   singleParent: false, // 한부모 공제
   married: false, // 올해 혼인신고 (혼인세액공제)
-  homelessHead: false, // 무주택 세대주 (월세·청약)
+  homelessHead: 'unknown', // 무주택 세대주: 'yes' | 'no' | 'unknown'(확인 필요)
+  dependentsVerified: false, // 부양가족 소득·나이 요건 확인함
   nationalPension: null, // 연간 국민연금 본인부담 (null 이면 자동 추정)
   healthInsurance: null, // 연간 건강·장기요양·고용보험 본인부담 (null 이면 자동 추정)
   prepaidTax: null, // 올해 이미 원천징수된 소득세 (지방세 제외)
@@ -108,6 +109,7 @@ export function emptyYear(year) {
     year: Number(year),
     profile: { ...DEFAULT_PROFILE, updatedAt: 0 },
     months: {},
-    review: { items: {}, lastYearRefund: null, updatedAt: 0 },
+    review: { items: {}, janItems: {}, validation: {}, lastYearRefund: null, updatedAt: 0 },
+    plan: { done: {}, updatedAt: 0 }, // 12월 31일 전에 할 일 체크
   };
 }

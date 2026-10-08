@@ -1,0 +1,20 @@
+# 2025년 귀속 연말정산 세법 설정
+# extends 로 지정한 연도의 값을 그대로 쓰고, 아래에 적은 값만 덮어쓴다.
+# (작년 원천징수영수증으로 시뮬레이터를 검증할 때 사용)
+
+year: 2025
+extends: 2026
+
+meta:
+  status: draft
+  reviewedAt: null
+  note: 2025년 귀속 기준입니다. 최종 판단은 국세청(홈택스) 안내로 확인하세요.
+  uncertain:
+    - socialInsurance: 2025년 국민연금·건강보험·장기요양보험 요율과 기준소득월액 상한
+    - card.childBonusPerChild: 자녀 수에 따른 신용카드 공제 기본한도 상향 적용 여부
+
+socialInsurance:
+  pensionRate: 0.045
+  pensionMonthlyMax: 6170000
+  healthRate: 0.03545
+  longTermCareRatio: 0.1295

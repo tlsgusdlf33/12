@@ -1,7 +1,7 @@
 // 서비스 워커: 오프라인 실행 + 업데이트 배포.
 // VERSION 이 바뀌면 브라우저가 새 워커를 내려받고, 앱이 "업데이트" 배너를 띄운다.
 // scripts/bump-version.mjs 가 VERSION 을 자동으로 갱신한다.
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const CACHE = `taxcheck-${VERSION}`;
 
 const ASSETS = [
@@ -20,6 +20,11 @@ const ASSETS = [
   'js/core/fields.js',
   'js/core/tax-engine.js',
   'js/core/merge.js',
+  'js/core/card-import.js',
+  'vendor/js-yaml.mjs',
+  'rules/index.json',
+  'rules/2026.yaml',
+  'rules/2025.yaml',
   'icons/icon.svg',
   'icons/icon-192.png',
   'icons/icon-512.png',

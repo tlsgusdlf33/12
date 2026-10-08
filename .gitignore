@@ -7,3 +7,6 @@ android/app/build/
 android/.gradle/
 ios/App/Pods/
 ios/App/build/
+# 금융·소득 데이터 (백업 JSON, 카드 내역 CSV 등)는 저장소에 올리지 않는다
+data/
+*.backup.json

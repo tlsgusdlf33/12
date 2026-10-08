@@ -343,6 +343,7 @@ main {
 }
 
 .rec.urgent .dot { background: var(--bad-soft); color: var(--bad); }
+.rec.check .dot { background: var(--warn-soft); color: var(--warn); }
 .rec.tip .dot { background: var(--primary-soft); color: var(--primary); }
 .rec.info .dot { background: var(--info-soft); color: var(--info); }
 .rec.done .dot { background: var(--good-soft); color: var(--good); }
@@ -839,4 +840,56 @@ dialog::backdrop {
   color: var(--text-3);
   margin-top: 18px;
   text-align: center;
+}
+
+/* ── 계절 카드 · 연말 할 일 · 검증 ── */
+a.card.seasonal {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+  background: var(--warn-soft);
+}
+
+.plan-item {
+  padding: 10px 0;
+  margin: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.plan-item:last-of-type {
+  border-bottom: none;
+}
+
+.plan-item.is-done b {
+  text-decoration: line-through;
+  color: var(--text-3);
+}
+
+.validation {
+  padding: 12px;
+  border-radius: 10px;
+  margin-top: 4px;
+}
+
+.validation.pass { background: var(--good-soft); }
+.validation.fail { background: var(--warn-soft); }
+
+code {
+  font-size: 0.92em;
+  background: var(--surface-2);
+  padding: 1px 5px;
+  border-radius: 5px;
+}
+
+.import-table td {
+  font-size: 12.5px;
+  text-align: right;
+  white-space: nowrap;
+  padding: 6px 0 6px 6px;
+}
+
+.import-table td:first-child {
+  text-align: left;
+  padding-left: 0;
 }

@@ -17,7 +17,13 @@ PC와 휴대폰 어디서나 아이콘으로 실행하는 설치형 웹앱(PWA)�
 | 연금 권장액 | 900만 원 한도까지 남은 금액, 남은 달 수로 나눈 월 납입액. **결정세액이 0원이 되는 지점까지만** 권장 |
 | 부족분 알림 | 지난달 입력 누락, 문턱 미달, 11~12월 마감 알림. 달력(.ics)에 매달 반복 일정 등록 |
 | 세금 추정 | 근로소득공제 → 과세표준 → 산출세액 → 세액공제 → 결정세액 → 환급액. 표준세액공제가 유리하면 자동 선택 |
-| 작년 점검 | 홈택스에서 작년 지급명세서를 보고 놓친 공제를 체크하는 첫 단계 안내 |
+| 작년 점검 (0단계) | 홈택스에서 작년 지급명세서를 보고 놓친 공제를 체크하는 첫 단계 안내 |
+| 시뮬레이터 검증 | 작년 원천징수영수증 값을 넣으면 앱 계산과 실제 결정세액의 오차를 표시 (목표 5% 이내) |
+| 카드 내역 가져오기 | 카드사 이용내역 CSV 또는 6번(고정비) 정규화 CSV → 전통시장·대중교통·문화 자동 분류, 공제 제외 항목 제거 |
+| 확인 필요 표시 | 무주택 세대주·부양가족 요건처럼 판정이 애매하면 계산에서 빼고 "확인 필요"와 충족 시 효과를 함께 안내 |
+| 11월 집중 모드 | 12월 31일 전에 할 일 목록(연금 추가 납입액, 카드 전략, 청약, 기부금)과 항목별·합계 예상 절세액 |
+| 1월 대조 | 간소화 자료에 빠지기 쉬운 항목(안경·교복·체험학습·월세·산후조리원 등) 체크리스트 |
+| 월간 텔레그램 리포트 | 매달 1일 오전 9시 남은 공제 여력과 이번 달 할 일을 텔레그램으로 발송 (GitHub Actions) |
 | 동기화 | Google 또는 이메일 로그인 → PC·휴대폰 실시간 동기화. 오프라인에서도 입력 가능 |
 | 업데이터 | 새 버전을 배포하면 앱에 "새 버전" 배너가 뜨고 버튼 한 번으로 적용. 재설치 불필요 |
 
@@ -87,11 +93,36 @@ git commit -am "v1.0.1" && git push
 
 ## 세법이 바뀌면
 
-모든 세법 수치(공제율·한도·세율표)는 `app/js/core/rules.js` 한 곳에 연도별로 있습니다.
-새 귀속연도는 `RULES` 에 연도를 추가하고, 바뀐 숫자만 덮어쓰면 됩니다. 규칙이 없는 연도는 가장 최근 규칙으로 계산하고 화면에 그 사실을 표시합니다.
-수정 후 `npm test` → `npm run bump` → 푸시.
+세법 수치(공제율·한도·문턱·세율표)는 코드에 없고 **연도별 YAML 설정 파일** `app/rules/{연도}.yaml` 에만 있습니다.
+각 파일에는 출처(`meta.sources`), 검토 상태(`meta.status`), 확인이 필요한 값(`meta.uncertain`)이 함께 들어 있고, 앱 **설정 → 세법 설정**에 그대로 표시됩니다.
+새 연도는 `extends: 이전연도` 로 시작해 바뀐 값만 적습니다. 설정이 없는 연도는 가장 최근 설정으로 계산하고 화면에 그 사실을 알립니다.
+매년 1월 [docs/RULES-REVIEW.md](docs/RULES-REVIEW.md) 체크리스트로 검토한 뒤 `npm test` → `npm run bump` → 푸시하면 업데이터로 모든 기기에 반영됩니다.
 
 > 현재 값은 2026년 귀속 기준으로 정리했습니다. 세법은 매년 바뀌니 출시 전과 매년 초에 국세청 안내와 대조해 주세요.
+
+## 월간 텔레그램 리포트 (매달 1일 자동 발송)
+
+`.github/workflows/monthly-report.yml` 이 매달 1일 오전 9시(한국 시간)에 Firestore 에서 데이터를 읽어 요약을 보냅니다. 데이터는 저장소에 저장하지 않습니다. 동기화(Firebase) 설정이 먼저 필요합니다.
+
+1. 텔레그램에서 **@BotFather** → `/newbot` → 봇 토큰 받기. 만든 봇에게 아무 메시지나 보낸 뒤 `https://api.telegram.org/bot<토큰>/getUpdates` 에서 `chat.id` 확인
+2. Firebase 콘솔 → 프로젝트 설정 → **서비스 계정 → 새 비공개 키 생성** (JSON 파일)
+3. Firebase 콘솔 → Authentication → 사용자 목록에서 본인 **사용자 UID** 복사
+4. 저장소 **Settings → Secrets and variables → Actions** 에 등록: `FIREBASE_SERVICE_ACCOUNT`(JSON 파일 내용 전체), `FIREBASE_UID`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+5. Actions 탭 → Monthly report → **Run workflow** 로 바로 시험
+
+로컬에서 백업 파일로 실행할 수도 있습니다 (`data/` 폴더는 git 에 올라가지 않습니다):
+
+```bash
+node scripts/monthly-report.mjs --backup data/backup.json           # 화면에 출력
+node scripts/monthly-report.mjs --backup data/backup.json --send    # 텔레그램 발송 (환경변수 필요)
+node scripts/monthly-report.mjs --backup data/backup.json --json    # 6번·17번 통합 리포트용 JSON
+```
+
+> 기획서의 Python 대신 앱과 **같은 JavaScript 계산 엔진**을 Node 로 실행합니다. 계산 코드를 두 벌로 관리하면 세법이 바뀔 때 어긋나기 쉽기 때문입니다.
+
+## 카드 내역 가져오기
+
+카드사 이용내역 CSV와 6번(고정비) 정규화 CSV 형식은 [docs/CARD-CSV.md](docs/CARD-CSV.md) 를 참고하세요.
 
 ## 모바일 앱으로 출시 · 수익화
 
@@ -112,13 +143,19 @@ app/                      ← 배포되는 웹앱 전체 (Capacitor webDir)
   js/sync.js              Firebase 로그인·동기화
   js/updater.js           새 버전 감지·적용
   js/reminders.js         달력 알림(.ics), 앱 알림
-  js/core/rules.js        연도별 세법 수치  ← 세법 개정 시 수정
+  js/core/rules.js        세법 설정 YAML 로더 (extends 병합)
+  js/core/card-import.js  카드 내역 CSV 분류·집계
+  js/core/report.js       월간 요약 리포트 (텔레그램·JSON)
+  rules/{연도}.yaml       연도별 세법 수치 + 출처  ← 세법 개정 시 여기만 수정
+  vendor/js-yaml.mjs      YAML 파서 (MIT)
   js/core/tax-engine.js   세금 계산·추천 엔진 (DOM 무관, 테스트 대상)
   js/core/fields.js       월별 입력 항목 정의
   js/core/merge.js        기기 간 병합 규칙
 tests/                    node:test 단위 테스트
 scripts/bump-version.mjs  버전 올리기
 scripts/make-icons.mjs    SVG → PNG 아이콘
+scripts/monthly-report.mjs 월간 리포트·텔레그램 발송
+docs/                     로드맵, 세법 검토 체크리스트, 카드 CSV 형식
 firebase.json, firestore.rules, capacitor.config.json
 ```
 

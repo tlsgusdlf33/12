@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { getRules } from '../app/js/core/rules.js';
+import { rulesReady } from './load-rules.mjs';
 import { emptyYear, emptyMonth } from '../app/js/core/fields.js';
 import {
   earnedIncomeDeduction,
@@ -18,6 +19,7 @@ import {
 } from '../app/js/core/tax-engine.js';
 import { mergeYear } from '../app/js/core/merge.js';
 
+await rulesReady;
 const R = getRules(2026);
 
 test('근로소득공제 구간', () => {
@@ -214,4 +216,106 @@ test('서비스 워커 사전 캐시 목록의 파일이 모두 존재', async (
   const sw = await readFile(new URL('../app/sw.js', import.meta.url), 'utf8');
   const list = JSON.parse(sw.match(/const ASSETS = (\[[\s\S]*?\]);/)[1].replace(/'/g, '"').replace(/,\s*\]/, ']'));
   for (const f of list.filter((x) => x !== './')) await access(new URL(`../app/${f}`, import.meta.url));
+});
+
+test('확인 필요: 무주택 세대주를 모르면 월세 공제를 빼고 효과를 안내', async () => {
+  const { buildRecommendations, calculateTax: calc } = await import('../app/js/core/tax-engine.js');
+  const y = emptyYear(2026);
+  y.profile.salary = 40_000_000;
+  y.months[1] = { ...emptyMonth(), rent: 500_000, updatedAt: 1 };
+  const r = analyze(y, { today: new Date(2026, 1, 10) });
+  assert.equal(r.tax.rent.credit, 0);
+  const check = r.recommendations.find((x) => x.id === 'check-homeless');
+  assert.ok(check && check.level === 'check' && check.amount > 0);
+  y.profile.homelessHead = 'yes';
+  assert.ok(analyze(y, { today: new Date(2026, 1, 10) }).tax.rent.credit > 0);
+  y.profile.homelessHead = 'no';
+  assert.ok(!analyze(y, { today: new Date(2026, 1, 10) }).recommendations.some((x) => x.id === 'check-homeless'));
+  void buildRecommendations; void calc;
+});
+
+test('11월 집중 모드와 연말 할 일 목록', () => {
+  const y = emptyYear(2026);
+  y.profile.salary = 60_000_000;
+  y.profile.homelessHead = 'yes';
+  for (let m = 1; m <= 10; m++) y.months[m] = { ...emptyMonth(), credit: 2_000_000, debit: 300_000, pensionSavings: 200_000, housingSubscription: 100_000, updatedAt: 1 };
+  const r = analyze(y, { today: new Date(2026, 10, 3) });
+  assert.ok(r.recommendations.some((x) => x.id === 'focus-mode'));
+  const ids = r.plan.items.map((i) => i.id);
+  assert.deepEqual(ids.slice(0, 2), ['pension', 'housing']);
+  assert.ok(ids.includes('preview'));
+  const sum = r.plan.items.reduce((s, i) => s + i.gain, 0);
+  assert.ok(r.plan.totalGain > 0 && r.plan.totalGain <= sum + 1, '합계는 개별 효과 합 이하 (세금 0원 하한)');
+});
+
+test('시뮬레이터 검증: 오차율 계산', async () => {
+  const { validateSimulator } = await import('../app/js/core/tax-engine.js');
+  const R25 = getRules(2025);
+  const base = calculateTax({ salary: 50_000_000, dependents: 1 }, { credit: 15_000_000, irp: 3_000_000 }, R25);
+  const ok = validateSimulator({ salary: 50_000_000, actualTax: base.determined, credit: 15_000_000, irp: 3_000_000 }, { dependents: 1 }, R25);
+  assert.equal(ok.errorRate, 0);
+  assert.ok(ok.pass);
+  const off = validateSimulator({ salary: 50_000_000, actualTax: Math.round(base.determined * 1.2), credit: 15_000_000, irp: 3_000_000 }, { dependents: 1 }, R25);
+  assert.ok(!off.pass && off.errorRate > 0.05);
+});
+
+test('카드 CSV: 머리글 탐지·공제 구분 분류·취소·연도 필터', async () => {
+  const { importTransactions } = await import('../app/js/core/card-import.js');
+  const csv = [
+    '삼성카드 이용내역,,,',
+    '이용일,이용하신곳,이용금액,카드구분',
+    '2026.03.02,스타벅스,"5,000",신용',
+    '2026.03.03,서울교통공사 지하철,1400,체크',
+    '2026-03-04,남대문시장 상회,20000,신용',
+    '2026/03/05,교보문고,15000,신용',
+    '2026.03.06,스타벅스,-5000,신용',
+    '2026.03.07,아파트관리비,200000,신용',
+    '2025.12.30,이마트,30000,신용',
+    '20260410,이마트,40000,',
+  ].join('\n');
+  const { months, summary } = importTransactions(csv, { year: 2026, defaultMethod: 'debit' });
+  assert.deepEqual(months[3], { credit: 0, debit: 0, market: 20000, transit: 1400, culture: 15000 });
+  assert.equal(months[4].debit, 40000); // 결제수단 비어 있으면 기본값
+  assert.equal(summary.excluded.length, 1);
+  assert.equal(summary.otherYear, 1);
+  assert.equal(summary.cancelled, 1);
+});
+
+test('카드 CSV: 6번 정규화 형식 (deduction 열 우선)', async () => {
+  const { importTransactions } = await import('../app/js/core/card-import.js');
+  const csv = 'date,amount,merchant,method,deduction\n2026-05-01,10000,동네가게,cash_receipt,market\n2026-05-02,8000,버스,credit,general\n';
+  const { months } = importTransactions(csv, { year: 2026 });
+  assert.deepEqual(months[5], { credit: 8000, debit: 0, market: 10000, transit: 0, culture: 0 });
+});
+
+test('동기화 병합: 연말 할 일(plan) 섹션도 병합', () => {
+  const a = emptyYear(2026);
+  const b = emptyYear(2026);
+  b.plan = { done: { pension: true }, updatedAt: 9 };
+  assert.equal(mergeYear(a, b).plan.done.pension, true);
+});
+
+test('월간 리포트: 남은 여력·할 일·연말 목록', async () => {
+  const { buildMonthlyReport } = await import('../app/js/core/report.js');
+  const y = emptyYear(2026);
+  y.profile.salary = 50_000_000;
+  y.months[10] = { ...emptyMonth(), credit: 1_000_000, pensionSavings: 500_000, updatedAt: 1 };
+  const { text, data } = buildMonthlyReport(y, { today: new Date(2026, 10, 1) });
+  assert.match(text, /연금저축\+IRP 850만 원 남음/);
+  assert.match(text, /지난달\(10월\) 입력 완료/);
+  assert.match(text, /12월 31일 전에 할 일/);
+  assert.equal(data.remaining.pensionRoom, 8_500_000);
+  assert.ok(data.yearEndPlan.totalGain > 0);
+});
+
+test('세법 설정: 모든 연도 파일이 오프라인 캐시에 있고 메타 정보를 가짐', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const sw = await readFile(new URL('../app/sw.js', import.meta.url), 'utf8');
+  const index = JSON.parse(await readFile(new URL('../app/rules/index.json', import.meta.url), 'utf8'));
+  for (const y of index.years) {
+    assert.ok(sw.includes(`'rules/${y}.yaml'`), `sw.js ASSETS 에 rules/${y}.yaml 추가 필요`);
+    const r = getRules(y);
+    assert.ok(r.meta?.note && Array.isArray(r.meta.sources) && r.meta.sources.length, `${y} meta`);
+    assert.ok(['draft', 'verified'].includes(r.meta.status));
+  }
 });

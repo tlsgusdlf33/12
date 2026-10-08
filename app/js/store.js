@@ -88,6 +88,13 @@ export const store = {
     emit('local', y.year);
   },
 
+  updatePlan(patch) {
+    const y = this.getYear();
+    y.plan = { done: {}, ...y.plan, ...patch, updatedAt: Date.now() };
+    persist();
+    emit('local', y.year);
+  },
+
   // 동기화로 받은 데이터 반영 (sync.js 전용)
   replaceYear(yearData, source = 'remote') {
     state.years[yearData.year] = yearData;
@@ -121,6 +128,7 @@ export const store = {
     // 빈 값에도 최신 시각을 찍어야 다른 기기에도 초기화가 전파된다
     fresh.profile.updatedAt = now;
     fresh.review.updatedAt = now;
+    fresh.plan.updatedAt = now;
     for (const m of Object.keys(this.getYear().months)) fresh.months[m] = { ...emptyMonth(), updatedAt: now, cleared: true };
     state.years[year] = fresh;
     persist();
